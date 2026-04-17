@@ -1,209 +1,141 @@
-# ========================================
-# Yahoo Finance Real-Time Stock Dashboard
-# ========================================
+# ==========================================
+# Live Revenue Pulse Dashboard (Streamlit)
+# ==========================================
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import yfinance as yf
-import numpy as np
+import random
+from datetime import datetime
+import requests
+import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# ─────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Yahoo Finance Dashboard",
-    page_icon="📈",
-    layout="wide",
-)
+# ================================
+# CONFIG
+# ================================
+st.set_page_config(page_title="Live Revenue Pulse", layout="wide")
 
-# ─────────────────────────────────────────────
-# CONSTANTS
-# ─────────────────────────────────────────────
-REFRESH_TTL = 1800
-DEFAULT_TICKERS = ["AAPL", "MSFT", "TSLA", "NVDA"]
+API_KEY = st.secrets.get("API_KEY", "YOUR_OPENWEATHER_API_KEY")  # safer
+REFRESH_INTERVAL = 30 * 1000  # 30 sec
 
-# ─────────────────────────────────────────────
+# ================================
 # AUTO REFRESH
-# ─────────────────────────────────────────────
-refresh_min = st.sidebar.slider("Auto-refresh (min)", 5, 60, 30)
-st_autorefresh(interval=refresh_min * 60000, key="refresh")
+# ================================
+st_autorefresh(interval=REFRESH_INTERVAL, key="refresh")
 
-# ─────────────────────────────────────────────
-# DATA FUNCTIONS
-# ─────────────────────────────────────────────
-@st.cache_data(ttl=REFRESH_TTL)
-def get_hist(ticker, period):
-    df = yf.download(
-        ticker,
-        period=period,
-        interval="1d",
-        progress=False,
-        auto_adjust=True
+st.title("📊 Live Revenue Pulse Dashboard")
+
+# ================================
+# SESSION STATE INIT
+# ================================
+if "sales_data" not in st.session_state:
+    st.session_state.sales_data = pd.DataFrame(
+        columns=["Time", "Product", "Price", "City"]
     )
 
-    if df.empty:
-        return df
+# ================================
+# FAKE DATA GENERATION
+# ================================
+products = ["Laptop", "Phone", "Tablet", "Headphones", "Camera"]
+cities = ["Chennai", "Mumbai", "Delhi", "Bangalore", "Hyderabad"]
 
-    # Fix MultiIndex columns issue
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+def generate_fake_sale():
+    return {
+        "Time": datetime.now(),
+        "Product": random.choice(products),
+        "Price": random.randint(5000, 50000),
+        "City": random.choice(cities)
+    }
 
-    # Ensure required columns exist
-    if "Close" not in df.columns:
-        return pd.DataFrame()
-
-    df["Returns"] = df["Close"].pct_change()
-    df["Volatility"] = df["Returns"].rolling(7).std() * 100
-    df["MA7"] = df["Close"].rolling(7).mean()
-    df["MA20"] = df["Close"].rolling(20).mean()
-    df["MA50"] = df["Close"].rolling(50).mean()
-
-    return df
-
-
-@st.cache_data(ttl=REFRESH_TTL)
-def get_multi(tickers, period):
-    data = {}
-    for t in tickers:
-        df = get_hist(t, period)
-        if not df.empty and "Close" in df.columns:
-            data[t] = df
-    return data
-
-
-def detect_anomalies(df):
-    df = df.copy()
-
-    if "Returns" not in df.columns:
-        df["anom"] = False
-        return df
-
-    mu = df["Returns"].mean()
-    sigma = df["Returns"].std()
-
-    if sigma == 0 or pd.isna(sigma):
-        df["z"] = 0
-        df["anom"] = False
-        return df
-
-    df["z"] = (df["Returns"] - mu) / sigma
-    df["anom"] = df["z"].abs() > 2.5
-    return df
-
-
-# ─────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────
-st.sidebar.title("📈 Settings")
-
-chosen = st.sidebar.multiselect(
-    "Select Tickers", DEFAULT_TICKERS, default=["AAPL", "MSFT"]
+# Add new row
+new_sale = generate_fake_sale()
+st.session_state.sales_data = pd.concat(
+    [st.session_state.sales_data, pd.DataFrame([new_sale])],
+    ignore_index=True
 )
 
-custom = st.sidebar.text_input("Add ticker")
+df = st.session_state.sales_data
 
-if custom.strip():
-    t = custom.strip().upper()
-    if t not in chosen:
-        chosen.append(t)
+# ================================
+# METRICS
+# ================================
+total_revenue = int(df["Price"].sum())
+total_orders = len(df)
 
-period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y"])
+col1, col2 = st.columns(2)
 
-# ─────────────────────────────────────────────
-# LOAD DATA
-# ─────────────────────────────────────────────
-if not chosen:
-    st.warning("Select at least one ticker")
-    st.stop()
+col1.metric("💰 Total Revenue", f"₹{total_revenue:,}")
+col2.metric("📦 Total Orders", total_orders)
 
-data = get_multi(chosen, period)
-
-if not data:
-    st.error("No valid data found (check ticker names)")
-    st.stop()
-
-# ─────────────────────────────────────────────
-# KPI
-# ─────────────────────────────────────────────
-st.title("📊 Stock Dashboard")
-
-cols = st.columns(len(data))
-
-for col, (ticker, df) in zip(cols, data.items()):
-    df = df.dropna(subset=["Close"])
-
-    if df.empty:
-        continue
-
-    price = df["Close"].iloc[-1]
-    prev = df["Close"].iloc[-2] if len(df) > 1 else price
-    change = price - prev
-    pct = (change / prev) * 100 if prev else 0
-
-    col.metric(ticker, f"${price:.2f}", f"{pct:.2f}%")
-
-# ─────────────────────────────────────────────
+# ================================
 # CHART
-# ─────────────────────────────────────────────
-focus = list(data.keys())[0]
-df = data[focus].dropna()
+# ================================
+st.subheader("📈 Sales by City")
 
-fig = make_subplots(rows=2, cols=1)
+city_sales = df.groupby("City", as_index=False)["Price"].sum()
 
-fig.add_trace(go.Candlestick(
-    x=df.index,
-    open=df["Open"],
-    high=df["High"],
-    low=df["Low"],
-    close=df["Close"],
-    name="Price"
-), row=1, col=1)
-
-fig.add_trace(go.Scatter(x=df.index, y=df["MA7"], name="MA7"), row=1, col=1)
-fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"), row=1, col=1)
-
-fig.add_trace(go.Bar(x=df.index, y=df["Volume"], name="Volume"), row=2, col=1)
-
+fig = px.bar(city_sales, x="City", y="Price", title="Revenue by City")
 st.plotly_chart(fig, use_container_width=True)
 
-# ─────────────────────────────────────────────
-# ANOMALIES
-# ─────────────────────────────────────────────
-st.subheader("⚠️ Anomalies")
+# ================================
+# WEATHER FUNCTION (CACHED)
+# ================================
+@st.cache_data(ttl=600)
+def get_weather(city):
+    if API_KEY == "YOUR_OPENWEATHER_API_KEY":
+        return "No API", "No API", "⚠️ Add API key"
 
-df_a = detect_anomalies(df)
-anom = df_a[df_a["anom"]]
+    try:
+        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
+        response = requests.get(url, timeout=5)
 
-if anom.empty:
-    st.success("No anomalies found")
-else:
-    for i, row in anom.tail(5).iterrows():
-        st.write(f"{i.date()} → {row['Returns']*100:.2f}%")
+        if response.status_code != 200:
+            return "Error", "Error", "⚠️ API issue"
 
-# ─────────────────────────────────────────────
-# SUMMARY TABLE
-# ─────────────────────────────────────────────
-rows = []
+        data = response.json()
 
-for ticker, df in data.items():
-    df = df.dropna(subset=["Close"])
+        weather_main = data["weather"][0]["main"]
+        temp = data["main"]["temp"]
 
-    if df.empty:
-        continue
+        if weather_main.lower() == "rain":
+            impact = "🌧️ Rain affecting sales"
+        elif temp > 35:
+            impact = "🔥 Heat affecting sales"
+        else:
+            impact = "✅ Normal conditions"
 
-    price = df["Close"].iloc[-1]
-    ret = (df["Close"].iloc[-1] / df["Close"].iloc[0] - 1) * 100
-    vol = df["Returns"].std() * np.sqrt(252) * 100
+        return weather_main, temp, impact
 
-    rows.append({
-        "Ticker": ticker,
-        "Price": round(price, 2),
-        "Return %": round(ret, 2),
-        "Volatility %": round(vol, 2)
+    except Exception:
+        return "N/A", "N/A", "❌ Weather unavailable"
+
+# ================================
+# WEATHER DISPLAY
+# ================================
+st.subheader("🌦️ Weather Impact on Sales")
+
+weather_data = []
+
+for city in cities:
+    weather, temp, impact = get_weather(city)
+    weather_data.append({
+        "City": city,
+        "Weather": weather,
+        "Temperature (°C)": temp,
+        "Impact": impact
     })
 
-summary = pd.DataFrame(rows)
-st.dataframe(summary, use_container_width=True)
+weather_df = pd.DataFrame(weather_data)
+
+st.dataframe(weather_df, use_container_width=True)
+
+# ================================
+# LIVE TABLE
+# ================================
+st.subheader("🧾 Live Sales Feed")
+st.dataframe(df.tail(10), use_container_width=True)
+
+# ================================
+# FOOTER
+# ================================
+st.caption("Auto-refresh every 30 seconds ⏳")
